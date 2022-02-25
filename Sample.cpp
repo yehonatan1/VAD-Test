@@ -10,6 +10,9 @@ void SampleUnload(_In_ PDRIVER_OBJECT DriverObject)
 	UNREFERENCED_PARAMETER(DriverObject);
 	DbgPrint("Stopped Sample");
 }
+
+
+
 int getPIDByName(wchar_t* name) {
 	PEPROCESS ep;
 	if (::PsLookupProcessByProcessId(::PsGetCurrentProcessId(), &ep) == STATUS_INVALID_PARAMETER) {
@@ -17,6 +20,7 @@ int getPIDByName(wchar_t* name) {
 		DbgPrint("Can't get EPROCESS");
 		return STATUS_INVALID_PARAMETER;
 	}
+
 
 	PUNICODE_STRING Path = NULL;
 	::SeLocateProcessImageName(ep, &Path);
@@ -51,6 +55,67 @@ int getPIDByName(wchar_t* name) {
 }
 
 
+
+VOID PrintVadTree(PMMVAD root) {
+	
+	/*
+	PEPROCESS eprocess = nullptr;
+	if (PsLookupProcessByProcessId((HANDLE)getPIDByName(name), &eprocess) == STATUS_INVALID_PARAMETER)
+	{
+		ObDereferenceObject(eprocess);
+		DbgPrint("Can't get EPROCESS");
+		return STATUS_INVALID_PARAMETER;
+	}
+	*/
+	if (root == NULL) {
+		return;
+	}
+
+	LPBYTE pUpi = ((LPBYTE)root) + 0x70 + 0x7d8; // _RTL_AVL_TREE
+	PRTL_AVL_TREE parent = ((PRTL_AVL_TREE)pUpi);
+	
+	if (parent->Root->Left != NULL) {
+		PMMVAD_SHORT mmvad_short = ((PMMVAD_SHORT)pUpi); //_MMVAD_SHORT
+		pUpi = ((LPBYTE)mmvad_short);
+		PMMVAD mmvad = ((PMMVAD)pUpi);
+		pUpi = ((LPBYTE)root) + 0x80;
+		//PFILE_OBJECT fileObject = ((PFILE_OBJECT)pUpi);
+		/*
+		if (fileObject->FileName.Buffer != NULL && fileObject->FileName.Buffer != NULL) {
+			DbgPrint("%wZ\n", fileObject->FileName);
+		}
+		*/
+		return PrintVadTree(mmvad);
+	}
+
+	if (parent->Root->Right != NULL) {
+		PMMVAD_SHORT mmvad_short = ((PMMVAD_SHORT)pUpi); //_MMVAD_SHORT
+		pUpi = ((LPBYTE)mmvad_short);
+		PMMVAD mmvad = ((PMMVAD)pUpi);
+		pUpi = ((LPBYTE)root) + 0x80;
+		//PFILE_OBJECT fileObject = ((PFILE_OBJECT)pUpi);
+		/*
+		if (fileObject->FileName.Buffer != NULL && fileObject->FileName.Buffer != NULL) {
+			DbgPrint("%wZ\n", fileObject->FileName);
+		}
+		*/
+		return PrintVadTree(mmvad);
+	}
+
+
+	/*
+	LPBYTE pUpi = ((LPBYTE)root) - 0x70;
+	PRTL_AVL_TREE vadRoot = nullptr;
+	PFILE_OBJECT fileObject = NULL;
+	fileObject = ((PFILE_OBJECT)pUpi);
+	if (fileObject->FileName.Buffer != NULL && fileObject->FileName.Buffer != NULL) {
+		DbgPrint("%wZ\n", fileObject->FileName);
+	}
+	*/
+
+}
+
+
 extern "C" NTSTATUS
 DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
@@ -75,15 +140,20 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 	LPBYTE pUpi = ((LPBYTE)eprocess) + 0x7d8;
 	PRTL_AVL_TREE vadRoot = nullptr;
 	vadRoot = ((PRTL_AVL_TREE)pUpi);
-	DbgPrint("The parent value is %llu\n", vadRoot->Root->ParentValue);
+	DbgPrint("The parent value is %llu\n",vadRoot->Root->ParentValue);
 
-	/*
+
 	PMMVAD pVadRoot = NULL;
 	pVadRoot = ((PMMVAD)pUpi);
+	PrintVadTree(pVadRoot);
 	DbgPrint("Test");
-	pUpi = ((LPBYTE)eprocess) + 0x80;
-	PFILE_OBJECT fileObject = ((PFILE_OBJECT)pUpi);
-	DbgPrint("%wZ\n", fileObject->FileName);
-	*/
+	//pUpi = ((LPBYTE)eprocess) - 0x70;
+	//PFILE_OBJECT fileObject = ((PFILE_OBJECT)pUpi);
+	//DbgPrint("%wZ\n", fileObject->FileName);
+
+	
+	
+	
+	
 	return STATUS_SUCCESS;
 }
