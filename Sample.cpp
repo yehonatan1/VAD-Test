@@ -1,20 +1,84 @@
 #include<Ntifs.h>
 #include <ntddk.h>
 #include <WinDef.h>
-#include <Psapi.h>
-#include "Structs.h"
+#include "structs.h"
 
 
-void SampleUnload(_In_ PDRIVER_OBJECT DriverObject)
+
+typedef struct _VAD_INFO
 {
+	LONG level;
+	//ULONG pAddress;
+	PFILE_OBJECT pFileObject;
+	PUNICODE_STRING Name;
+}VAD_INFO, * PVAD_INFO;
+
+PEPROCESS getEprocessByName(wchar_t* name);
+PRTL_BALANCED_NODE GetVadRoot(wchar_t* szProcessName);
+VOID ListVad(PRTL_BALANCED_NODE pParentVad, int level);
+VOID SetVadInfo(PMMVAD_SHORT pVad, PVAD_INFO pVadInfo);
+VOID DisplayVadInfo(PVAD_INFO pVadInfo);
+int getPIDByName(wchar_t* name);
+PFILE_OBJECT MMVADToFileObject(MMVAD node);
+
+
+
+void SampleUnload(PDRIVER_OBJECT DriverObject) {
 	UNREFERENCED_PARAMETER(DriverObject);
-	DbgPrint("Stopped Sample");
+	KdPrint(("Sample driver Unload called\n"));
+}
+
+PFILE_OBJECT MMVADToFileObject(PMMVAD node) {
+	LPBYTE byte = ((LPBYTE)node) + 0x80;
+	return (PFILE_OBJECT)byte;
 }
 
 
 
+VOID SetVadInfo(PMMVAD_SHORT pVad, PVAD_INFO pVadInfo) {
+	//pVadInfo->pAddress = (ULONG)pVad;
+	LPBYTE byte = ((LPBYTE)pVad+0x80);
+	pVadInfo->pFileObject = ((PFILE_OBJECT)byte);
+	pVadInfo->Name = &pVadInfo->pFileObject->FileName;
+}
+
+VOID DisplayVadInfo(PVAD_INFO pVadInfo)
+{
+	//DbgPrint("\n[+]0x%x", pVadInfo->pAddress);
+	KdPrint(("      Level : %ld", pVadInfo->level));
+	//KdPrint(("      File Object : 0x%x", pVadInfo->pFileObject));
+	KdPrint(("      Name : %wZ", pVadInfo->Name));
+	return;
+}
+
+
+PRTL_BALANCED_NODE GetVadRoot(wchar_t* szProcessName) {
+	//UNREFERENCED_PARAMETER(szProcessName);
+	KdPrint(("Get Vad Root\n"));
+	PEPROCESS ep = NULL;
+	PRTL_BALANCED_NODE pVadRoot = NULL;
+	LPBYTE byte;
+	int x = getPIDByName(szProcessName);
+	
+	PsLookupProcessByProcessId((HANDLE)x,&ep);
+	if (ep == 0x0) {
+		ObDereferenceObject(ep);
+		KdPrint(("Not Working\n"));
+		return 0x0;
+	}
+	byte = ((LPBYTE)ep) + 0x7d8;
+	pVadRoot = ((PRTL_AVL_TREE)byte)->Root;
+	//DbgPrint("[+]0x%p\n", pVadRoot);
+	return pVadRoot;
+}
+
+
+
+//Getting process pid by his name
 int getPIDByName(wchar_t* name) {
 	PEPROCESS ep;
+
+	//Getting the Eprocess structure of the current process
 	if (::PsLookupProcessByProcessId(::PsGetCurrentProcessId(), &ep) == STATUS_INVALID_PARAMETER) {
 		ObDereferenceObject(ep);
 		DbgPrint("Can't get EPROCESS");
@@ -23,13 +87,19 @@ int getPIDByName(wchar_t* name) {
 
 
 	PUNICODE_STRING Path = NULL;
+	//Getting the image name
 	::SeLocateProcessImageName(ep, &Path);
+
+	//Getting the ActiveProcessLinks of the process
 	PLIST_ENTRY Process_List_Entry = ((LIST_ENTRY*)((LPBYTE)ep + 0x448));
 	PLIST_ENTRY List_Entry = Process_List_Entry->Flink;
 	LPBYTE pUpi;
 	//DbgPrint("Starting with buffer path: %wZ", Path);
+
+	//Skiping all the process with null image name
 	while (Path->Buffer == NULL) {
 		//DbgPrint("The buffer is null so going forward to next process: %wZ", Path);
+		//Getting the EPROCESS of ActiveProcessLinks
 		pUpi = ((LPBYTE)List_Entry) - 0x448;
 		ep = ((PEPROCESS)pUpi);
 		::SeLocateProcessImageName(ep, &Path);
@@ -37,6 +107,7 @@ int getPIDByName(wchar_t* name) {
 	}
 
 	//DbgPrint("1.The path is: %wZ", Path);
+	//Searching the process by his name 
 	while (wcsstr(Path->Buffer, name) == NULL && Process_List_Entry != List_Entry->Flink) {
 		pUpi = ((LPBYTE)List_Entry) - 0x448;
 		ep = ((PEPROCESS)pUpi);
@@ -49,111 +120,59 @@ int getPIDByName(wchar_t* name) {
 		return STATUS_SUCCESS;
 	}
 	pUpi = ((LPBYTE)List_Entry->Blink) - 0x448 + 0x440;
-	int UniqueProcessId = *((int*)pUpi); //Notepad PID
-	//DbgPrint("The PID of %wZ is %d\n",UniqueProcessId,name);
+	int UniqueProcessId = *((int*)pUpi); //Process PID
+	DbgPrint("The PID of %ls is %d\n", name, UniqueProcessId);
 	return UniqueProcessId;
 }
 
+VOID ListVad(PRTL_BALANCED_NODE pParentVad,int level) {
 
 
-VOID PrintVadTree(PMMVAD root) {
-	
-	/*
-	PEPROCESS eprocess = nullptr;
-	if (PsLookupProcessByProcessId((HANDLE)getPIDByName(name), &eprocess) == STATUS_INVALID_PARAMETER)
-	{
-		ObDereferenceObject(eprocess);
-		DbgPrint("Can't get EPROCESS");
-		return STATUS_INVALID_PARAMETER;
-	}
-	*/
-	if (root == NULL) {
+	if (pParentVad == NULL || !MmIsAddressValid(pParentVad))
 		return;
-	}
 
-	LPBYTE pUpi = ((LPBYTE)root) + 0x70 + 0x7d8; // _RTL_AVL_TREE
-	PRTL_AVL_TREE parent = ((PRTL_AVL_TREE)pUpi);
-	
-	if (parent->Root->Left != NULL) {
-		PMMVAD_SHORT mmvad_short = ((PMMVAD_SHORT)pUpi); //_MMVAD_SHORT
-		pUpi = ((LPBYTE)mmvad_short);
-		PMMVAD mmvad = ((PMMVAD)pUpi);
-		pUpi = ((LPBYTE)root) + 0x80;
-		//PFILE_OBJECT fileObject = ((PFILE_OBJECT)pUpi);
-		/*
-		if (fileObject->FileName.Buffer != NULL && fileObject->FileName.Buffer != NULL) {
-			DbgPrint("%wZ\n", fileObject->FileName);
-		}
-		*/
-		return PrintVadTree(mmvad);
-	}
-
-	if (parent->Root->Right != NULL) {
-		PMMVAD_SHORT mmvad_short = ((PMMVAD_SHORT)pUpi); //_MMVAD_SHORT
-		pUpi = ((LPBYTE)mmvad_short);
-		PMMVAD mmvad = ((PMMVAD)pUpi);
-		pUpi = ((LPBYTE)root) + 0x80;
-		//PFILE_OBJECT fileObject = ((PFILE_OBJECT)pUpi);
-		/*
-		if (fileObject->FileName.Buffer != NULL && fileObject->FileName.Buffer != NULL) {
-			DbgPrint("%wZ\n", fileObject->FileName);
-		}
-		*/
-		return PrintVadTree(mmvad);
-	}
-
-
-	/*
-	LPBYTE pUpi = ((LPBYTE)root) - 0x70;
-	PRTL_AVL_TREE vadRoot = nullptr;
+	UNREFERENCED_PARAMETER(level);
+	PRTL_BALANCED_NODE pVadLeft = NULL;
+	PRTL_BALANCED_NODE pVadRight = NULL;
 	PFILE_OBJECT fileObject = NULL;
-	fileObject = ((PFILE_OBJECT)pUpi);
-	if (fileObject->FileName.Buffer != NULL && fileObject->FileName.Buffer != NULL) {
-		DbgPrint("%wZ\n", fileObject->FileName);
-	}
-	*/
+	pVadLeft = pParentVad->Left;
+	pVadRight = pParentVad->Right;
+	fileObject = MMVADToFileObject((PMMVAD)((LPBYTE)pParentVad));
 
+	if (MmIsAddressValid((PULONG)fileObject) == FALSE)
+		DbgPrint("Address isn't valid");
+
+	DbgPrint("[+]0x%p %d\n", pParentVad,level);
+	//DbgPrint("\tName: %wZ\n", MMVADToFileObject((PMMVAD)((LPBYTE)pParentVad))->FileName);
+	//DbgPrint("Test\n");
+
+
+
+
+
+	pVadLeft = pParentVad->Left;
+	pVadRight = pParentVad->Right;
+	
+	if (MmIsAddressValid(pVadLeft))
+		ListVad(pVadLeft, level + 1);
+
+	if (MmIsAddressValid(pVadRight))
+		ListVad(pVadRight, level + 1);
+	
+	return;
 }
 
 
-extern "C" NTSTATUS
-DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+
+extern "C"
+NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
 	UNREFERENCED_PARAMETER(RegistryPath);
-	DbgPrint("Sample driver Load called\n");
-	KdPrint(("Test"));
 	DriverObject->DriverUnload = SampleUnload;
-	PEPROCESS eprocess = nullptr;
-	//int pid = getPIDByName(L"notepad.exe");
-	//DbgPrint("The PID of notepad is: %d", pid);
-	int pid = getPIDByName(L"notepad.exe");
-	if (pid <= 0 || PsLookupProcessByProcessId((HANDLE)pid, &eprocess) == STATUS_INVALID_PARAMETER)
-	{
-		ObDereferenceObject(eprocess);
-		DbgPrint("Can't get EPROCESS");
-		return STATUS_INVALID_PARAMETER;
-	}
-	DbgPrint("The pid of notepad is %d\n", pid);
-	DbgPrint("It worked");
-	
-	
-	LPBYTE pUpi = ((LPBYTE)eprocess) + 0x7d8;
-	PRTL_AVL_TREE vadRoot = nullptr;
-	vadRoot = ((PRTL_AVL_TREE)pUpi);
-	DbgPrint("The parent value is %llu\n",vadRoot->Root->ParentValue);
+	KdPrint(("Sample driver Load called\n"));
+	wchar_t* str = L"Calculator.exe";
+	ListVad(GetVadRoot(str),1);
+	DbgPrint("Test Main\n");
 
-
-	PMMVAD pVadRoot = NULL;
-	pVadRoot = ((PMMVAD)pUpi);
-	PrintVadTree(pVadRoot);
-	DbgPrint("Test");
-	//pUpi = ((LPBYTE)eprocess) - 0x70;
-	//PFILE_OBJECT fileObject = ((PFILE_OBJECT)pUpi);
-	//DbgPrint("%wZ\n", fileObject->FileName);
-
-	
-	
-	
-	
 	return STATUS_SUCCESS;
 }
